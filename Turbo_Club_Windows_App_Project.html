@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Private Race – Multiplayer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10151d;color:#f4f7fb;font:16px system-ui,sans-serif}main{max-width:1000px;margin:auto;padding:16px}h1{margin:0 0 5px;font-size:clamp(25px,4vw,36px)}p{color:#bdc8d6;margin:7px 0 12px}.bar{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin:12px 0}button,input,select{background:#243143;color:white;border:1px solid #53647a;border-radius:9px;padding:10px 12px;font:inherit}button{background:#1769d2;border:0;font-weight:700;cursor:pointer}button:hover{background:#287fe9}canvas{width:100%;height:auto;display:block;border:2px solid #43546a;border-radius:14px;background:#31583a}.panel{background:#19222e;border:1px solid #344254;border-radius:12px;padding:12px;margin-top:12px}.stats{display:flex;flex-wrap:wrap;gap:18px;font-weight:700}.small{font-size:13px;color:#9eacbd}kbd{background:#2c3949;padding:2px 6px;border-radius:5px}.status{font-weight:700;color:#f4d06f}.ok{color:#70e0a0}
+</style>
+</head>
+<body><main>
+<h1>🏁 Private Race – Multiplayer</h1>
+<p>Lav et privat løb og invitér en ven med koden. Begge skal åbne spillet i en browser med internet.</p>
+<div class="bar">
+<button id="host">Opret privat løb</button>
+<input id="codeInput" maxlength="6" placeholder="Indtast løbskode" autocomplete="off">
+<button id="join">Deltag med kode</button>
+<strong id="room">Ingen løbskode</strong>
+</div>
+<div class="bar">
+<button id="start">Start / genstart løb</button>
+<label>Gear <select id="gearMode"><option value="auto">Automatisk</option><option value="manual">Manuelt</option></select></label>
+<label>Bane <select id="track"><option value="1">Grand Circuit</option><option value="2">Desert Ring</option></select></label>
+<span id="status" class="status">Ikke forbundet</span>
+</div>
+<canvas id="game" width="900" height="560"></canvas>
+<div class="panel stats">
+<span>Fart: <span id="speed">0</span> km/t</span><span>Gear: <span id="gear">N</span></span>
+<span>Omgang: <span id="lap">0</span>/3</span><span>Tid: <span id="time">0.0</span> s</span>
+<span>Modstander: <span id="opponent">Venter</span></span>
+</div>
+<div class="panel"><b>Styring</b>
+<p><kbd>W</kbd>/<kbd>↑</kbd> gas · <kbd>S</kbd>/<kbd>↓</kbd> bremse · <kbd>A</kbd>/<kbd>←</kbd> og <kbd>D</kbd>/<kbd>→</kbd> drej · <kbd>Space</kbd> håndbremse</p>
+<p>Manuelt gear: <kbd>E</kbd> op · <kbd>Q</kbd> ned. Tilslut et USB-rat og pedaler; spillet forsøger at læse gamepad-input, hvis browseren genkender dit udstyr.</p>
+<p class="small">Forbindelsen bruger PeerJS' offentlige signaleringsserver. Hvis skolens eller hjemmets netværk blokerer forbindelsen, kan multiplayer muligvis ikke forbinde.</p></div>
+<div class="panel"><b>Sådan spiller I sammen</b><p>1. Én spiller trykker “Opret privat løb”. 2. Send koden til vennen. 3. Vennen indtaster koden og trykker “Deltag med kode”. 4. Når status viser “Forbundet”, kan I køre samtidig.</p><p class="small">Dette er en tidlig multiplayer-version: I kan se hinandens biler og køre samtidig. Det er ikke en fuld Gran Turismo-lignende simulation endnu.</p></div>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(()=>{
+const c=document.getElementById('game'),ctx=c.getContext('2d'),$=id=>document.getElementById(id);
+const keys={};let peer=null,conn=null,isHost=false,connected=false,roomCode='',remote=null;
+let running=false,last=0,elapsed=0,speed=0,angle=-Math.PI/2,x=450,y=75,gear=1,lap=0,progress=0;
+const tracks=[{cx:450,cy:280,rx:315,ry:205,innerX:190,innerY:105},{cx:450,cy:280,rx:330,ry:190,innerX:205,innerY:92}];let t=tracks[0];
+function setStatus(s,ok=false){$('status').textContent=s;$('status').className='status'+(ok?' ok':'');}
+function reset(){speed=0;angle=-Math.PI/2;x=t.cx;y=t.cy-t.ry+22;gear=1;lap=0;progress=0;elapsed=0;running=false;update();}
+function update(){$('speed').textContent=Math.round(speed);$('gear').textContent=speed<2?'N':($('gearMode').value==='manual'?gear:'D');$('lap').textContent=lap;$('time').textContent=elapsed.toFixed(1);}
+function onTrack(px,py){let a=((px-t.cx)**2/t.rx**2)+((py-t.cy)**2/t.ry**2),b=((px-t.cx)**2/t.innerX**2)+((py-t.cy)**2/t.innerY**2);return a<=1&&b>=1;}
+function drawCar(px,py,rot,color){ctx.save();ctx.translate(px,py);ctx.rotate(rot);ctx.fillStyle='#111';ctx.fillRect(-17,-11,9,5);ctx.fillRect(8,-11,9,5);ctx.fillRect(-17,7,9,5);ctx.fillRect(8,7,9,5);ctx.fillStyle=color;ctx.fillRect(-15,-8,30,16);ctx.fillStyle='#9edcff';ctx.fillRect(-5,-6,12,12);ctx.fillStyle='white';ctx.fillRect(10,-5,4,3);ctx.fillRect(10,2,4,3);ctx.restore();}
+function draw(){
+ctx.clearRect(0,0,900,560);ctx.fillStyle='#31583a';ctx.fillRect(0,0,900,560);
+ctx.beginPath();ctx.ellipse(t.cx,t.cy,t.rx,t.ry,0,0,Math.PI*2);ctx.ellipse(t.cx,t.cy,t.innerX,t.innerY,0,0,Math.PI*2,true);ctx.fillStyle='#555b61';ctx.fill('evenodd');
+ctx.lineWidth=5;ctx.strokeStyle='#e6e6e6';ctx.stroke();ctx.setLineDash([18,16]);ctx.lineWidth=3;ctx.strokeStyle='#e6d889';ctx.beginPath();ctx.ellipse(t.cx,t.cy,(t.rx+t.innerX)/2,(t.ry+t.innerY)/2,0,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+for(let i=0;i<24;i++){let a=i*Math.PI*2/24;ctx.fillStyle='#1b3c27';ctx.beginPath();ctx.arc(t.cx+Math.cos(a)*(t.rx+34),t.cy+Math.sin(a)*(t.ry+30),10,0,Math.PI*2);ctx.fill();}
+ctx.save();ctx.translate(t.cx,t.cy-t.ry);for(let i=0;i<8;i++)for(let j=0;j<2;j++)if((i+j)%2===0){ctx.fillStyle='#fff';ctx.fillRect(-22+i*6,j*9,6,9);}ctx.restore();
+drawCar(x,y,angle,isHost?'#e52e3f':'#2688ff');
+if(remote&&Date.now()-remote.seen<2500){drawCar(remote.x,remote.y,remote.angle,isHost?'#2688ff':'#e52e3f');}
+ctx.fillStyle='white';ctx.font='bold 18px system-ui';ctx.fillText('PRIVATE RACE',22,32);
+if(!running){ctx.fillStyle='rgba(0,0,0,.52)';ctx.fillRect(250,220,400,100);ctx.fillStyle='white';ctx.textAlign='center';ctx.font='bold 26px system-ui';ctx.fillText(lap>=3?'LØB FÆRDIG!':'Tryk “Start / genstart løb”',450,262);ctx.font='16px system-ui';ctx.fillText('WASD / piletaster eller rat',450,292);ctx.textAlign='left';}
+}
+function cleanup(){try{conn&&conn.close();peer&&peer.destroy();}catch(e){}conn=null;peer=null;connected=false;remote=null;$('opponent').textContent='Venter';}
+function setupConnection(p){peer=p;p.on('error',e=>setStatus('Forbindelsesfejl: '+e.type));p.on('disconnected',()=>setStatus('Afbrudt – prøver igen'));p.on('close',()=>{connected=false;setStatus('Forbindelsen lukket');});}
+function acceptConnection(cn){conn=cn;conn.on('open',()=>{connected=true;setStatus('Forbundet – klar til race!',true);$('opponent').textContent='Forbundet';conn.send({type:'hello',track:$('track').value});});conn.on('data',d=>{if(d&&d.type==='state'){remote={x:d.x,y:d.y,angle:d.angle,seen:Date.now()};}if(d&&d.type==='hello'){$('opponent').textContent='Online';}});conn.on('close',()=>{connected=false;remote=null;setStatus('Modstander afbrudt');$('opponent').textContent='Venter';});}
+$('host').onclick=()=>{
+cleanup();isHost=true;roomCode=Math.random().toString(36).slice(2,8).toUpperCase();$('room').textContent='Kode: '+roomCode;$('codeInput').value=roomCode;
+if(!window.Peer){setStatus('PeerJS kunne ikke indlæses');return;}
+let p=new Peer('private-race-'+roomCode.toLowerCase());setupConnection(p);
+p.on('open',()=>setStatus('Venter på ven – del koden '+roomCode));
+p.on('connection',cn=>{if(conn){cn.close();return;}acceptConnection(cn);});
+};
+$('join').onclick=()=>{
+let code=$('codeInput').value.trim().toUpperCase();if(!/^[A-Z0-9]{6}$/.test(code)){setStatus('Skriv en kode på 6 tegn');return;}
+cleanup();isHost=false;roomCode=code;
+if(!window.Peer){setStatus('PeerJS kunne ikke indlæses');return;}
+let p=new Peer();setupConnection(p);p.on('open',()=>{setStatus('Forbinder til løb...');acceptConnection(p.connect('private-race-'+code.toLowerCase(),{reliable:true}));});
+};
+$('start').onclick=()=>{reset();running=true;};
+$('track').onchange=()=>{t=tracks[+$('track').value-1];reset();if(conn&&connected)conn.send({type:'hello',track:$('track').value});};
+$('gearMode').onchange=update;
+window.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();if(e.key.toLowerCase()==='e'&&$('gearMode').value==='manual')gear=Math.min(5,gear+1);if(e.key.toLowerCase()==='q'&&$('gearMode').value==='manual')gear=Math.max(1,gear-1);});
+window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+function tick(ts){let dt=Math.min((ts-last)/1000||0,.04);last=ts;
+if(running){elapsed+=dt;let throttle=keys.w||keys.arrowup,brake=keys.s||keys.arrowdown,left=keys.a||keys.arrowleft,right=keys.d||keys.arrowright;
+const pads=navigator.getGamepads?navigator.getGamepads():[];for(const p of pads){if(p){throttle=throttle||!!p.buttons[7]?.pressed;brake=brake||!!p.buttons[6]?.pressed;if(Math.abs(p.axes[0])>.12){left=p.axes[0]<-.12;right=p.axes[0]>.12;}}}
+if(throttle)speed+=( $('gearMode').value==='manual'?gear/5:1)*55*dt;else speed-=18*dt;if(brake)speed-=65*dt;if(keys[' '])speed-=35*dt;speed=Math.max(0,Math.min(190,speed));
+let steer=(right?1:0)-(left?1:0);angle+=steer*dt*(.7+speed/75);x+=Math.cos(angle)*speed*.42*dt;y+=Math.sin(angle)*speed*.42*dt;if(!onTrack(x,y))speed*=.94;
+let a=Math.atan2(y-t.cy,x-t.cx),p=(a+Math.PI/2+Math.PI*2)%(Math.PI*2);if(progress-p>5)lap++;progress=p;if(lap>=3){running=false;lap=3;}update();}
+if(conn&&connected&&running&&Math.floor(ts/70)!==Math.floor((ts-dt*1000)/70)){try{conn.send({type:'state',x,y,angle});}catch(e){}}
+draw();requestAnimationFrame(tick);}
+reset();requestAnimationFrame(tick);
+})();
+</script></body></html>
